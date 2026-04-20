@@ -21,6 +21,7 @@ Required either way:
 """
 import base64
 import hashlib
+import html
 import json
 import os
 import re
@@ -54,14 +55,6 @@ SOURCES = [
         "id_prefix": "sdk-python",
     },
     {
-        "name": "Anthropic news",
-        "url": "https://www.anthropic.com/news",
-        "kind": "link_index",
-        "id_prefix": "news",
-        "link_prefix": "/news/",
-        "site": "https://www.anthropic.com",
-    },
-    {
         "name": "Anthropic engineering",
         "url": "https://www.anthropic.com/engineering",
         "kind": "link_index",
@@ -69,7 +62,47 @@ SOURCES = [
         "link_prefix": "/engineering/",
         "site": "https://www.anthropic.com",
     },
+    {
+        "name": "Anthropic news",
+        "url": "https://www.anthropic.com/news",
+        "kind": "link_index",
+        "id_prefix": "news",
+        "link_prefix": "/news/",
+        "site": "https://www.anthropic.com",
+    },
 ]
+
+# Email output groups posts by source in this order. Builder-critical first.
+SOURCE_ORDER = [
+    "Claude Code",
+    "Anthropic Python SDK",
+    "Anthropic engineering",
+    "Anthropic news",
+]
+
+# Slug substrings that signal a geo/region-specific announcement.
+# Matched against lowercased slug; any hit → drop the item.
+# Add patterns here as noise crops up.
+GEO_SKIP_PATTERNS = [
+    "sydney", "australia", "australian", "canberra",
+    "tokyo", "japan", "japanese",
+    "seoul", "korea", "korean",
+    "bengaluru", "bangalore", "india", "indian",
+    "london", "uk-", "-uk-", "britain", "british",
+    "paris", "france", "french",
+    "berlin", "munich", "germany", "german",
+    "dublin", "ireland", "irish",
+    "singapore",
+    "asia-pacific", "apac", "emea", "apj", "latam",
+    "european-union", "brussels", "eu-ai-act",
+    "mou-",  # memorandum of understanding slugs follow pattern "*-mou-*" or "mou-*"
+    "-mou",
+]
+
+
+def _is_geo_irrelevant(slug: str) -> bool:
+    s = slug.lower()
+    return any(p in s for p in GEO_SKIP_PATTERNS)
 
 
 def log(msg: str) -> None:
@@ -107,28 +140,76 @@ def parse_link_index(html: str, src):
     pattern = r'href="(' + re.escape(src["link_prefix"]) + r'[^"?#]+)"'
     slugs = sorted(set(re.findall(pattern, html)))
     entries = []
+    skipped = []
     for slug in slugs:
+        if _is_geo_irrelevant(slug):
+            skipped.append(slug)
+            continue
         url = f"{src['site']}{slug}"
-        title = slug.rsplit("/", 1)[-1].replace("-", " ")
         entries.append({
             "id": f"{src['id_prefix']}::{slug}",
-            "title": title,
+            "title": "",  # real title lifted from og:title at fetch time
+            "summary": "",  # og:description one-liner
             "body": "",
             "url": url,
         })
+    if skipped:
+        log(f"filtered {len(skipped)} geo-irrelevant {src['id_prefix']} slugs: "
+            + ", ".join(s.rsplit('/', 1)[-1] for s in skipped[:6])
+            + ("..." if len(skipped) > 6 else ""))
     return entries
 
 
-def fetch_article_body(url: str) -> str:
+def _strip_anthropic_suffix(t: str) -> str:
+    # Anthropic appends "| Anthropic" or "\ Anthropic" to og:title on some posts.
+    return re.sub(r"\s*[\\|]\s*Anthropic\s*$", "", t).strip()
+
+
+def _meta_content(page_html: str, name: str) -> str:
+    """Extract content= from a <meta> tag by property= or name=, any attr order."""
+    n = re.escape(name)
+    patterns = [
+        rf'<meta[^>]*\bproperty=["\']{n}["\'][^>]*\bcontent=["\']([^"\']+)["\']',
+        rf'<meta[^>]*\bname=["\']{n}["\'][^>]*\bcontent=["\']([^"\']+)["\']',
+        rf'<meta[^>]*\bcontent=["\']([^"\']+)["\'][^>]*\bproperty=["\']{n}["\']',
+        rf'<meta[^>]*\bcontent=["\']([^"\']+)["\'][^>]*\bname=["\']{n}["\']',
+    ]
+    for p in patterns:
+        m = re.search(p, page_html, re.IGNORECASE | re.DOTALL)
+        if m:
+            return html.unescape(m.group(1).strip())
+    return ""
+
+
+def _title_tag(page_html: str) -> str:
+    m = re.search(r"<title[^>]*>([^<]+)</title>", page_html, re.IGNORECASE)
+    if not m:
+        return ""
+    return _strip_anthropic_suffix(html.unescape(m.group(1).strip()))
+
+
+def _main_text(page_html: str) -> str:
+    """Grab readable text from <main>...</main>; fall back to the whole body."""
+    m = re.search(r"<main\b[^>]*>(.*?)</main>", page_html, flags=re.DOTALL | re.IGNORECASE)
+    body = m.group(1) if m else page_html
+    body = re.sub(r"<script[^>]*>.*?</script>", " ", body, flags=re.DOTALL)
+    body = re.sub(r"<style[^>]*>.*?</style>", " ", body, flags=re.DOTALL)
+    body = re.sub(r"<[^>]+>", " ", body)
+    body = re.sub(r"\s+", " ", body).strip()
+    return html.unescape(body)
+
+
+def fetch_article_meta(url: str) -> dict:
+    """Return {title, summary, body} using og tags when available."""
     try:
-        html = http_get(url)
+        page_html = http_get(url)
     except Exception as e:
-        return f"(failed to fetch: {e})"
-    text = re.sub(r"<script[^>]*>.*?</script>", " ", html, flags=re.DOTALL)
-    text = re.sub(r"<style[^>]*>.*?</style>", " ", text, flags=re.DOTALL)
-    text = re.sub(r"<[^>]+>", " ", text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text[:4000]
+        return {"title": "", "summary": f"(failed to fetch: {e})", "body": ""}
+    title = _meta_content(page_html, "og:title") or _title_tag(page_html)
+    title = _strip_anthropic_suffix(title)
+    summary = _meta_content(page_html, "og:description") or _meta_content(page_html, "description")
+    body = _main_text(page_html)[:2000]
+    return {"title": title, "summary": summary, "body": body}
 
 
 def load_state():
@@ -146,16 +227,30 @@ def entry_hash(entry) -> str:
     return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:16]
 
 
+def _format_item(e) -> str:
+    title = (e.get("title") or "(untitled)").strip()
+    line = f"- **[{title}]({e['url']})**"
+    summary = (e.get("summary") or "").strip()
+    if summary:
+        return f"{line}  \n  {summary}"
+    body = (e.get("body") or "").replace("\n", " ").strip()
+    if body:
+        # Changelog-style entries (no og:description): keep a short body snippet.
+        return f"{line}  \n  {body[:280]}"
+    return line
+
+
 def format_entries(entries) -> str:
     by_source = {}
     for e in entries:
         by_source.setdefault(e["source"], []).append(e)
+    ordered = [s for s in SOURCE_ORDER if s in by_source] \
+              + [s for s in by_source if s not in SOURCE_ORDER]
     parts = []
-    for source, items in by_source.items():
+    for source in ordered:
         parts.append(f"## {source}\n")
-        for e in items:
-            body_preview = e["body"][:600].replace("\n", " ").strip()
-            parts.append(f"- **[{e['title']}]({e['url']})**  \n  {body_preview}")
+        for e in by_source[source]:
+            parts.append(_format_item(e))
         parts.append("")
     return "\n".join(parts)
 
@@ -259,13 +354,14 @@ def collect_new(state):
         for e in entries:
             key = e["id"]
             if src["kind"] == "link_index":
-                # Presence-only dedup: the URL is the identity, body is fetched
-                # only when the slug is genuinely new. Skips editing-detection
-                # on existing articles in exchange for stable dedup and 0 extra
-                # HTTP on steady-state runs.
+                # Presence-only dedup: the URL is the identity. Only fetch article
+                # meta (og:title, og:description) when the slug is genuinely new.
                 if key in seen:
                     continue
-                e["body"] = fetch_article_body(e["url"])
+                meta = fetch_article_meta(e["url"])
+                e["title"] = meta["title"] or e["url"].rsplit("/", 1)[-1].replace("-", " ")
+                e["summary"] = meta["summary"]
+                e["body"] = meta["body"]
                 h = "1"  # sentinel — any non-empty value is fine
             else:
                 # changelog_md: body-hash dedup catches edits to an existing
