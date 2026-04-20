@@ -1,23 +1,35 @@
 # anthropic-changelog-watch
 
-Watches Anthropic's changelogs and emails the raw entries when something new appears.
+Anthropic ships constantly. This is how I stopped missing it.
 
-## What it watches
+Fork this repo. Hand it to Claude Code with one prompt. Twenty minutes later you get an email every time Anthropic adds a Claude Code release, an SDK release, a news post, or an engineering-blog post. Silent when nothing ships.
 
-- Claude Code `CHANGELOG.md` (raw from GitHub)
-- Anthropic Python SDK `CHANGELOG.md` (raw from GitHub)
-- `anthropic.com/news`
-- `anthropic.com/engineering`
+No servers. No cost. Runs on GitHub Actions. 100-ish lines of Python.
 
-Detection is a sha256 diff against `state.json`. No LLM calls.
+## What you get
 
-## How it runs
+- An email in your inbox every time something new appears on:
+  - [Claude Code `CHANGELOG.md`](https://github.com/anthropics/claude-code/blob/main/CHANGELOG.md)
+  - [Anthropic Python SDK `CHANGELOG.md`](https://github.com/anthropics/anthropic-sdk-python/blob/main/CHANGELOG.md)
+  - [anthropic.com/news](https://www.anthropic.com/news)
+  - [anthropic.com/engineering](https://www.anthropic.com/engineering)
+- A quiet weekly heartbeat so you know the watcher is still alive when nothing ships.
+- No LLM calls in the loop. Dedup is a sha256 check against a committed `state.json` — deterministic, auditable, free.
 
-GitHub Actions cron, every 2 hours (`.github/workflows/watch.yml`). `state.json` lives in the repo and is committed back by the `github-actions[bot]` when entries change.
+## Setup (for vibe coders)
 
-- First run: records state as baseline, sends one "watcher is live" email.
-- Runs with new entries: emails a digest of the new items.
-- Runs with no new entries AND 7+ days since the last email: sends a heartbeat so you know it's still alive. Otherwise silent.
+1. **Fork this repo** (button top-right on GitHub).
+2. **Clone your fork locally** and `cd` into it.
+3. **Open Claude Code in the repo directory.**
+4. **Paste the prompt in [SETUP_PROMPT.md](SETUP_PROMPT.md)** into Claude. It will ask you the two or three questions it genuinely needs and handle the rest.
+
+That's it. Claude will ask you whether you have personal Gmail or Google Workspace, then walk you through the two-or-three-minute credential dance for whichever you have. When the first run succeeds you'll get a "watcher is live" email.
+
+## What the setup actually does
+
+- Sets these GitHub Actions secrets in your fork: `GMAIL_USER`, `EMAIL_TO`, and either `GMAIL_APP_PASSWORD` (personal Gmail) or `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` + `GOOGLE_REFRESH_TOKEN` (Workspace).
+- Triggers the GitHub Actions workflow (`.github/workflows/watch.yml`), which runs every 2 hours on GitHub's infrastructure. Your laptop can be closed; the watcher doesn't care.
+- On the first run it records the current state of the four sources as a baseline and sends one confirmation email. From then on you only hear from it when something actually changes.
 
 ## Sources
 
@@ -28,29 +40,32 @@ GitHub Actions cron, every 2 hours (`.github/workflows/watch.yml`). `state.json`
 | Anthropic news | HTML link index (`/news/<slug>`) | `link_index` |
 | Anthropic engineering | HTML link index (`/engineering/<slug>`) | `link_index` |
 
-## Secrets
+Add more in [watch.py](watch.py) — append to `SOURCES`. Two kinds supported: `changelog_md` (raw markdown where `## heading` entries are items) and `link_index` (HTML page where links follow a `/<prefix>/<slug>` pattern).
 
-Set in GitHub repo settings (Settings → Secrets and variables → Actions):
+## Email paths
 
-- `GMAIL_USER` — the Gmail address that sends and receives the emails.
-- `GOOGLE_CLIENT_ID` — OAuth client id from a Google Cloud desktop-app OAuth client (we reuse the one `gws` is already registered with).
-- `GOOGLE_CLIENT_SECRET` — matching OAuth client secret.
-- `GOOGLE_REFRESH_TOKEN` — long-lived refresh token with `https://www.googleapis.com/auth/gmail.send` scope, obtained via the installed-app flow.
+The script picks its email backend by which secrets are set:
 
-## Manual run
+- **`GMAIL_APP_PASSWORD` set** → SMTP to `smtp.gmail.com:465` with that app password. Simplest; works with any Google account that has 2-Step Verification on. Gets blocked on some Workspace tenants.
+- **`GOOGLE_REFRESH_TOKEN` set** → Gmail API via OAuth, refreshing an access token on every run. Works on Workspace tenants that block app passwords. Run [tools/get_refresh_token.py](tools/get_refresh_token.py) once to generate the refresh token from your own Google Cloud OAuth client.
 
-Locally (needs `GMAIL_USER` and `GMAIL_APP_PASSWORD` in env):
+If neither is set, the run fails with a clear error.
+
+## Running locally
 
 ```bash
+export GMAIL_USER="you@gmail.com"
+export EMAIL_TO="you@gmail.com"
+export GMAIL_APP_PASSWORD="abcd efgh ijkl mnop"  # or the OAuth triple
 python3 watch.py
 ```
 
-Or trigger the workflow from the Actions tab in GitHub ("Run workflow").
+Or just use the workflow — go to your fork's **Actions** tab, pick "watch", click **Run workflow**.
 
-## Adding a source
+## Why this exists
 
-Append to the `SOURCES` list in `watch.py`. Supported kinds:
-- `changelog_md` — raw markdown CHANGELOG.md where `## <version>` headings are entries.
-- `link_index` — HTML page where article links follow a `/<prefix>/<slug>` pattern. Set `link_prefix` and `site`.
+Anthropic's changelog, release notes, and engineering blog are four separate surfaces, all of which ship fast. Anyone building on top — vibe coders, agent hackers, founders shipping AI-native products — pays a tax to keep up manually. A cron + diff + email pipeline solves it, but "set up a cron + diff + email pipeline" isn't something most people want to do on a Tuesday night. So here's the pipeline, pre-built; hand it to Claude to wire into your accounts.
 
-Each source needs a unique `id_prefix` (used to namespace state keys).
+## License
+
+MIT. See [LICENSE](LICENSE).

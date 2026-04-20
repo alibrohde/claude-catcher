@@ -1,19 +1,30 @@
 #!/usr/bin/env python3
-"""Watch Anthropic changelogs and email a digest of new items.
+"""Watch Anthropic changelogs and email a digest when new items appear.
 
 Detection is deterministic (sha256 of entry body vs state.json).
-Email is sent via the Gmail API using OAuth 2.0 (refresh token grant).
-Required env:
-  GMAIL_USER             — Gmail address that sends and receives
-  GOOGLE_CLIENT_ID       — OAuth client id (desktop app)
-  GOOGLE_CLIENT_SECRET   — OAuth client secret
-  GOOGLE_REFRESH_TOKEN   — long-lived refresh token with gmail.send scope
+
+Email is sent via Gmail. Two auth paths, pick one:
+
+  Easy (personal Gmail): SMTP with an app password
+    GMAIL_USER           = your@gmail.com
+    GMAIL_APP_PASSWORD   = 16 chars from myaccount.google.com/apppasswords
+
+  Workspace or when app passwords are blocked: Gmail API via OAuth
+    GMAIL_USER           = you@yourcompany.com
+    GOOGLE_CLIENT_ID     = OAuth client id (desktop app)
+    GOOGLE_CLIENT_SECRET = OAuth client secret
+    GOOGLE_REFRESH_TOKEN = refresh token with gmail.send scope
+                           (run tools/get_refresh_token.py to obtain)
+
+Required either way:
+  EMAIL_TO               = where to send the digest
 """
 import base64
 import hashlib
 import json
 import os
 import re
+import smtplib
 import subprocess
 import sys
 import urllib.parse
@@ -27,7 +38,6 @@ HEARTBEAT_DAYS = 7
 ROOT = Path(__file__).resolve().parent
 STATE_PATH = ROOT / "state.json"
 LOG_PATH = ROOT / "watch.log"
-EMAIL_TO = "alir@outsetcapital.com"
 USER_AGENT = "anthropic-changelog-watch/0.1 (+https://github.com/alibrohde/anthropic-changelog-watch)"
 
 SOURCES = [
@@ -169,7 +179,26 @@ def markdown_to_html(md: str) -> str:
     )
 
 
-def gmail_access_token() -> str:
+def _build_message(subject: str, markdown_body: str) -> EmailMessage:
+    user = os.environ["GMAIL_USER"]
+    to = os.environ["EMAIL_TO"]
+    html = markdown_to_html(markdown_body)
+    msg = EmailMessage()
+    msg["From"] = user
+    msg["To"] = to
+    msg["Subject"] = subject
+    msg.set_content(markdown_body)
+    msg.add_alternative(html, subtype="html")
+    return msg
+
+
+def _send_via_smtp(msg: EmailMessage) -> None:
+    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as s:
+        s.login(os.environ["GMAIL_USER"], os.environ["GMAIL_APP_PASSWORD"])
+        s.send_message(msg)
+
+
+def _gmail_access_token() -> str:
     req = urllib.request.Request(
         "https://oauth2.googleapis.com/token",
         data=urllib.parse.urlencode({
@@ -184,17 +213,9 @@ def gmail_access_token() -> str:
         return json.loads(r.read())["access_token"]
 
 
-def send_email(subject: str, markdown_body: str) -> None:
-    user = os.environ["GMAIL_USER"]
-    html = markdown_to_html(markdown_body)
-    msg = EmailMessage()
-    msg["From"] = user
-    msg["To"] = EMAIL_TO
-    msg["Subject"] = subject
-    msg.set_content(markdown_body)
-    msg.add_alternative(html, subtype="html")
+def _send_via_oauth(msg: EmailMessage) -> None:
     raw = base64.urlsafe_b64encode(bytes(msg)).decode("ascii").rstrip("=")
-    token = gmail_access_token()
+    token = _gmail_access_token()
     req = urllib.request.Request(
         "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
         data=json.dumps({"raw": raw}).encode(),
@@ -205,6 +226,19 @@ def send_email(subject: str, markdown_body: str) -> None:
     )
     with urllib.request.urlopen(req, timeout=30) as r:
         r.read()
+
+
+def send_email(subject: str, markdown_body: str) -> None:
+    msg = _build_message(subject, markdown_body)
+    if os.environ.get("GMAIL_APP_PASSWORD"):
+        _send_via_smtp(msg)
+    elif os.environ.get("GOOGLE_REFRESH_TOKEN"):
+        _send_via_oauth(msg)
+    else:
+        raise RuntimeError(
+            "No email auth configured. Set GMAIL_APP_PASSWORD (easy path) "
+            "or GOOGLE_CLIENT_ID + GOOGLE_CLIENT_SECRET + GOOGLE_REFRESH_TOKEN."
+        )
 
 
 def collect_new(state):
