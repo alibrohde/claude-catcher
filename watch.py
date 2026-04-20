@@ -2,17 +2,21 @@
 """Watch Anthropic changelogs and email a digest of new items.
 
 Detection is deterministic (sha256 of entry body vs state.json).
-Email is sent via Gmail SMTP using credentials from env:
-  GMAIL_USER           — Gmail address that sends and receives
-  GMAIL_APP_PASSWORD   — 16-char app password from myaccount.google.com/apppasswords
+Email is sent via the Gmail API using OAuth 2.0 (refresh token grant).
+Required env:
+  GMAIL_USER             — Gmail address that sends and receives
+  GOOGLE_CLIENT_ID       — OAuth client id (desktop app)
+  GOOGLE_CLIENT_SECRET   — OAuth client secret
+  GOOGLE_REFRESH_TOKEN   — long-lived refresh token with gmail.send scope
 """
+import base64
 import hashlib
 import json
 import os
 import re
-import smtplib
 import subprocess
 import sys
+import urllib.parse
 import urllib.request
 from datetime import datetime, timezone
 from email.message import EmailMessage
@@ -165,9 +169,23 @@ def markdown_to_html(md: str) -> str:
     )
 
 
+def gmail_access_token() -> str:
+    req = urllib.request.Request(
+        "https://oauth2.googleapis.com/token",
+        data=urllib.parse.urlencode({
+            "client_id": os.environ["GOOGLE_CLIENT_ID"],
+            "client_secret": os.environ["GOOGLE_CLIENT_SECRET"],
+            "refresh_token": os.environ["GOOGLE_REFRESH_TOKEN"],
+            "grant_type": "refresh_token",
+        }).encode(),
+        headers={"Content-Type": "application/x-www-form-urlencoded"},
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        return json.loads(r.read())["access_token"]
+
+
 def send_email(subject: str, markdown_body: str) -> None:
     user = os.environ["GMAIL_USER"]
-    app_password = os.environ["GMAIL_APP_PASSWORD"]
     html = markdown_to_html(markdown_body)
     msg = EmailMessage()
     msg["From"] = user
@@ -175,9 +193,18 @@ def send_email(subject: str, markdown_body: str) -> None:
     msg["Subject"] = subject
     msg.set_content(markdown_body)
     msg.add_alternative(html, subtype="html")
-    with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=30) as s:
-        s.login(user, app_password)
-        s.send_message(msg)
+    raw = base64.urlsafe_b64encode(bytes(msg)).decode("ascii").rstrip("=")
+    token = gmail_access_token()
+    req = urllib.request.Request(
+        "https://gmail.googleapis.com/gmail/v1/users/me/messages/send",
+        data=json.dumps({"raw": raw}).encode(),
+        headers={
+            "Authorization": f"Bearer {token}",
+            "Content-Type": "application/json",
+        },
+    )
+    with urllib.request.urlopen(req, timeout=30) as r:
+        r.read()
 
 
 def collect_new(state):

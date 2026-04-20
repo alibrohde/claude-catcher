@@ -33,7 +33,9 @@ GitHub Actions cron, every 2 hours (`.github/workflows/watch.yml`). `state.json`
 Set in GitHub repo settings (Settings → Secrets and variables → Actions):
 
 - `GMAIL_USER` — the Gmail address that sends and receives the emails.
-- `GMAIL_APP_PASSWORD` — 16-char app password from [myaccount.google.com/apppasswords](https://myaccount.google.com/apppasswords).
+- `GOOGLE_CLIENT_ID` — OAuth client id from a Google Cloud desktop-app OAuth client (we reuse the one `gws` is already registered with).
+- `GOOGLE_CLIENT_SECRET` — matching OAuth client secret.
+- `GOOGLE_REFRESH_TOKEN` — long-lived refresh token with `https://www.googleapis.com/auth/gmail.send` scope, obtained via the installed-app flow.
 
 ## Manual run
 
