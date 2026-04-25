@@ -1,6 +1,6 @@
 {
-  "last_activity_ts": "2026-04-24T10:27:25+00:00",
-  "last_email_ts": "2026-04-24T10:27:25+00:00",
+  "last_activity_ts": "2026-04-25T09:57:38+00:00",
+  "last_email_ts": "2026-04-25T09:57:38+00:00",
   "seen": {
     "claude-code::0.2.100": "5214220e87082a18",
     "claude-code::0.2.102": "cdb33496705b9a49",
@@ -298,12 +298,14 @@
     "engineering::/engineering/multi-agent-research-system": "27c6892d2f421742",
     "engineering::/engineering/swe-bench-sonnet": "c0347d093b01576c",
     "engineering::/engineering/writing-tools-for-agents": "5efed348d2381eac",
+    "news::/news/anthropic-amazon-compute": "1",
     "news::/news/anthropic-nec": "1",
     "news::/news/australia-MOU": "4a11af2f3be85333",
     "news::/news/claude-design-anthropic-labs": "a2d47af045b5b4b3",
     "news::/news/claude-is-a-space-to-think": "5f3be1798adde7b6",
     "news::/news/claude-opus-4-7": "b8a01a75ea69bad8",
     "news::/news/claude-partner-network": "19915b89db26800b",
+    "news::/news/election-safeguards-update": "1",
     "news::/news/google-broadcom-partnership-compute": "1a53dcfbad085d36",
     "news::/news/mozilla-firefox-security": "235810dd5e340d30",
     "news::/news/narasimhan-board": "1405d8f02ea2f7cf",
